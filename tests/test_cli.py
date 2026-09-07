@@ -157,7 +157,8 @@ def test_latest_job_is_the_default(env: Env) -> None:
     assert r.code == 0, r.err
     assert "using latest job" in r.err and "stopped" in r.err
     r = env.run("logs")
-    assert r.code == 0 and r.out == "one\n"
+    # Linux shells append "Terminated" to the log when their child is killed.
+    assert r.code == 0 and r.out.startswith("one\n")
 
 
 def test_kill_escalates_to_sigkill(env: Env) -> None:
