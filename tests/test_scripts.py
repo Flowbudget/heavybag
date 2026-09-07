@@ -68,7 +68,7 @@ def test_conda_command() -> None:
         ["python", "x.py"], kind="conda", workdir="w", job_id="j", conda="ml env"
     )
     assert cmd.splitlines()[-1] == (
-        'exec "$HB_CONDA" run -n \'ml env\' --no-capture-output --live-stream python x.py'
+        "exec \"$HB_CONDA\" run -n 'ml env' --no-capture-output --live-stream python x.py"
     )
     assert "miniforge3" in cmd
     sh_ok(cmd)

@@ -79,8 +79,15 @@ def test_shell_mode(env: Env) -> None:
 
 
 def test_setup_and_env(env: Env) -> None:
-    r = env.run("run", *base(env), "--setup", "export GREETING=hello", "--no-pull", "--shell",
-                'echo "$GREETING from $(pwd)"')
+    r = env.run(
+        "run",
+        *base(env),
+        "--setup",
+        "export GREETING=hello",
+        "--no-pull",
+        "--shell",
+        'echo "$GREETING from $(pwd)"',
+    )
     assert r.code == 0, r.err
     assert r.out.startswith("hello from ")
     assert r.out.rstrip().endswith(Path(env.remote_dir).name)
@@ -109,8 +116,12 @@ def test_pull_never_overwrites_newer_local_files(env: Env) -> None:
 
 def test_detach_ps_attach_kill_logs_rm(env: Env) -> None:
     write(env.project / "slow.sh", "echo started; sleep 60; echo never")
+    t0 = time.time()
     r = env.run("run", *base(env), "-d", "--", "sh", "slow.sh")
     assert r.code == 0, r.err
+    # The start must return at once. If any host-side process keeps the ssh
+    # session's stdout open, this takes as long as the job (60 s).
+    assert time.time() - t0 < 10, "run -d did not return until the job ended"
     job_id = started_job(r)
     assert job_id in env.job_ids()
 

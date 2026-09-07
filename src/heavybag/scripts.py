@@ -119,13 +119,17 @@ printf '%s\\n' {q(kind)} > "$J/kind"
 printf '%s\\n' "$W" > "$J/workdir"
 date -u +%Y-%m-%dT%H:%M:%SZ > "$J/started"
 if command -v bash >/dev/null 2>&1; then HB_SH="bash -l"; else HB_SH="sh"; fi
+# hb_detach runs in a forked background subshell. It must exec, not call:
+# dash keeps the original stdout on a spare fd while a redirection is active,
+# and a subshell that waits for its child would hold that fd, and with it the
+# ssh session, open until the job ends.
 hb_detach() {{
   if command -v setsid >/dev/null 2>&1; then
-    setsid "$@"
+    exec setsid "$@"
   elif command -v python3 >/dev/null 2>&1; then
-    python3 -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' "$@"
+    exec python3 -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' "$@"
   else
-    "$@"
+    exec "$@"
   fi
 }}
 hb_detach sh -c '
