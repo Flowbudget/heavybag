@@ -223,11 +223,13 @@ if ! kill -0 "$pid" 2>/dev/null; then echo "{LOST}"; exit 0; fi
 if [ "$(cat "$J/kind" 2>/dev/null)" = docker ]; then
   docker kill {q("heavybag-" + job_id)} >/dev/null 2>&1 || :
 fi
-kill -TERM -- -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || :
+# No "--" before the group id: dash's builtin kill rejects it, while a
+# negative pid straight after the signal works in dash, bash, zsh and ash.
+kill -TERM -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || :
 i=0
 while kill -0 "$pid" 2>/dev/null && [ $i -lt {ticks} ]; do sleep 0.1; i=$((i+1)); done
 if kill -0 "$pid" 2>/dev/null; then
-  kill -KILL -- -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || :
+  kill -KILL -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || :
   sleep 0.2
   [ -f "$J/exit" ] || echo 137 > "$J/exit"
   echo "killed"
