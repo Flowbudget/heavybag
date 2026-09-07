@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff
+      - run: ruff check .
+      - run: ruff format --check .
+
+  test:
+    name: test (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e ".[dev]"
+      - run: rsync --version | head -1
+      - run: pytest
+
+  real-ssh:
+    name: test over real ssh (localhost sshd)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Start sshd and allow key login to localhost
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q openssh-server rsync
+          sudo systemctl start ssh
+          ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519
+          cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys
+          chmod 600 ~/.ssh/authorized_keys
+          printf 'Host localhost\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n  LogLevel ERROR\n' >> ~/.ssh/config
+          chmod 600 ~/.ssh/config
+          ssh localhost 'echo ssh works on $(hostname)'
+      - run: pip install -e ".[dev]"
+      - run: HEAVYBAG_TEST_HOST=localhost pytest
+      - name: Smoke test the installed command end to end
+        run: |
+          mkdir demo && cd demo
+          printf 'print("hello from the host")\nopen("out.txt","w").write("ok")\n' > hello.py
+          heavybag run --host localhost python3 hello.py
+          test "$(cat out.txt)" = ok
+          heavybag ps -a --host localhost
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install build twine
+      - run: python -m build
+      - run: twine check dist/*
+      - name: Install the wheel into a clean venv and run it
+        run: |
+          python -m venv /tmp/venv
+          /tmp/venv/bin/pip install dist/*.whl
+          /tmp/venv/bin/heavybag --version
+          /tmp/venv/bin/heavybag run --help >/dev/null

@@ -1,0 +1,34 @@
+#!/usr/bin/env python3
+"""Fake rsync for tests: rewrites host:path to $HB_FAKE_REMOTE_HOME/path, then runs the real rsync."""
+
+import os
+import re
+import subprocess
+import sys
+
+home = os.environ["HB_FAKE_REMOTE_HOME"]
+here = os.path.dirname(os.path.abspath(__file__))
+real = next(
+    os.path.join(d, "rsync")
+    for d in os.environ["PATH"].split(os.pathsep)
+    if os.path.abspath(d) != here and os.path.isfile(os.path.join(d, "rsync"))
+)
+
+out = []
+args = sys.argv[1:]
+i = 0
+while i < len(args):
+    arg = args[i]
+    if arg == "-e":
+        i += 2
+        continue
+    match = re.match(r"^([A-Za-z0-9_.@-]+):(.*)$", arg)
+    if match and not arg.startswith(("-", "/")):
+        path = match.group(2)
+        if not path.startswith("/"):
+            path = os.path.join(home, path)
+        out.append(path)
+    else:
+        out.append(arg)
+    i += 1
+sys.exit(subprocess.call([real, *out]))

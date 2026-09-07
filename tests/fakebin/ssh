@@ -1,0 +1,43 @@
+#!/usr/bin/env python3
+"""Fake ssh for tests: runs the command locally inside $HB_FAKE_REMOTE_HOME.
+
+HB_FAKE_SSH_FAIL=1        every call fails at once with exit 255
+HB_FAKE_SSH_DIE_AFTER=N   kill the command after N seconds and exit 255
+                          (simulates a dropped connection while following)
+"""
+
+import os
+import signal
+import subprocess
+import sys
+
+TWO_ARG_OPTIONS = {"-o", "-p", "-i", "-F", "-l", "-e", "-J", "-b", "-c", "-D", "-L", "-R", "-W"}
+
+args = sys.argv[1:]
+i = 0
+while i < len(args) and args[i].startswith("-"):
+    i += 2 if args[i] in TWO_ARG_OPTIONS else 1
+host = args[i]
+command = " ".join(args[i + 1 :])
+home = os.environ["HB_FAKE_REMOTE_HOME"]
+
+with open(os.path.join(home, ".ssh_calls"), "a", encoding="utf-8") as handle:
+    handle.write(host + "\n")
+
+if os.environ.get("HB_FAKE_SSH_FAIL"):
+    sys.exit(255)
+
+env = dict(os.environ, HOME=home)
+# Own session, so a simulated drop kills the whole remote pipeline (tail, sleep loop)
+# but not the job, which detached itself with setsid.
+proc = subprocess.Popen(["sh", "-c", command], cwd=home, env=env, start_new_session=True)
+die_after = os.environ.get("HB_FAKE_SSH_DIE_AFTER")
+if die_after:
+    try:
+        proc.wait(timeout=float(die_after))
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait()
+        sys.exit(255)
+    sys.exit(proc.returncode)
+sys.exit(proc.wait())
