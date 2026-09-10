@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "heavybag"
-version = "0.1.0"
+version = "0.1.1"
 description = "Punch your code over to the GPU box and watch it run. rsync + ssh, one command, no daemon."
 readme = "README.md"
 license = "MIT"

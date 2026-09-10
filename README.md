@@ -28,6 +28,7 @@ scheduler, a daemon on the host, or a config file before the first run.
 ## What heavybag does
 
 - **Push**: `rsync` your project directory to the host. Respects `.gitignore`.
+  Never deletes what a job wrote there.
 - **Run**: starts your command in its own session on the host, so it survives
   a dropped connection. Optionally inside a Docker image or a conda environment.
 - **Watch**: streams the log into your terminal, live.
@@ -42,10 +43,11 @@ two tools, which macOS and Linux already ship.
 ## Try it without any configuration
 
 You need an ssh host you can log into, ideally with a key. `gpu-box` below can
-be an alias from `~/.ssh/config` or plain `user@192.168.1.20`.
+be an alias from `~/.ssh/config` or plain `user@192.168.1.20`. heavybag is
+installed straight from GitHub; `pip install git+https://...` works as well.
 
 ```bash
-pipx install heavybag        # or: pip install heavybag
+pipx install git+https://github.com/Flowbudget/heavybag
 
 cd my-project
 heavybag run --host gpu-box python train.py
@@ -211,7 +213,7 @@ laptop that can reach the host.
 
 On the laptop: Python 3.11 or newer, `ssh`, `rsync`. macOS ships both
 (the built-in openrsync is fine). Linux has them or is one package away.
-Windows works through WSL.
+Installing from GitHub also needs `git`. Windows works through WSL.
 
 On the host: Linux or macOS with ssh access, `rsync`, `bash` or `sh`, and
 GNU or BSD coreutils. `setsid` comes with util-linux on every Linux; on a
@@ -230,7 +232,14 @@ later, run `heavybag attach`.
 
 **Does `run` sync the whole directory every time?**
 It runs `rsync`, so only changed files travel. Files that git ignores are not
-pushed. Add `exclude` patterns for big data that git does not know about.
+pushed, also when the project is a subdirectory of a larger repository. Add
+`exclude` patterns for big data that git does not know about.
+
+**Can a push delete results on the host?**
+No. A push deletes a file on the host only if an earlier push put it there
+and you have deleted it locally since. Whatever a job wrote on the host stays,
+whether you pulled it or not. The list of pushed files lives in
+`~/.heavybag/pushed/` on your machine.
 
 **Can it overwrite my local edits when it pulls?**
 Not by default. Without a `pull` list heavybag runs `rsync --update`, which

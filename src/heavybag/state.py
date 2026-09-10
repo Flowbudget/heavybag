@@ -1,12 +1,20 @@
-"""Local record of started jobs, so `attach`, `pull` and `kill` work without arguments.
+"""Local records: the jobs started from here, and the files each push put on a host.
 
-One JSON object per line in $HEAVYBAG_HOME/jobs.jsonl (default ~/.heavybag/jobs.jsonl).
-The host is the source of truth for job status; this file only remembers where
-a job came from and where its results belong.
+jobs.jsonl holds one JSON object per line, so `attach`, `pull` and `kill` work
+without arguments. The host is the source of truth for job status; this file
+only remembers where a job came from and where its results belong.
+
+pushed/<key> lists the files that pushes of one local directory to one host
+directory have transferred, one relative path per line. A push deletes on the
+host only files from this list that are gone locally, so whatever a job wrote
+on the host stays there.
+
+Both live in $HEAVYBAG_HOME (default ~/.heavybag).
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from dataclasses import asdict, dataclass
@@ -92,3 +100,24 @@ def forget(job_id: str) -> None:
     with path.open("w", encoding="utf-8") as handle:
         for record in keep:
             handle.write(json.dumps(asdict(record)) + "\n")
+
+
+def _pushed_path(host: str, remote_dir: str, local_dir: str) -> Path:
+    key = hashlib.sha256(f"{host}\n{remote_dir}\n{local_dir}".encode()).hexdigest()[:16]
+    return state_dir() / "pushed" / key
+
+
+def pushed_files(host: str, remote_dir: str, local_dir: str) -> set[str]:
+    """Files that earlier pushes of local_dir have put into remote_dir on host."""
+    path = _pushed_path(host, remote_dir, local_dir)
+    if not path.is_file():
+        return set()
+    return {line for line in path.read_text(encoding="utf-8").split("\n") if line}
+
+
+def save_pushed_files(host: str, remote_dir: str, local_dir: str, files: set[str]) -> None:
+    path = _pushed_path(host, remote_dir, local_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text("".join(f + "\n" for f in sorted(files)), encoding="utf-8")
+    os.replace(tmp, path)

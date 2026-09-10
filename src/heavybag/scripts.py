@@ -251,6 +251,22 @@ rm -rf "$J"
 """
 
 
+def delete_script(workdir: str, files: Sequence[str] = (), dirs: Sequence[str] = ()) -> str:
+    """Remove files that an earlier push put on the host, then directories left empty.
+
+    rmdir only removes empty directories, so whatever a job wrote next to the
+    deleted files stays. A file rm cannot remove is reported on stderr and does
+    not stop the push.
+    """
+    lines = [f"cd {q(workdir)} || exit 1"]
+    if files:
+        lines.append("rm -f -- " + " ".join(q(f) for f in files))
+    if dirs:
+        lines.append("rmdir -- " + " ".join(q(d) for d in dirs) + " 2>/dev/null")
+    lines.append("exit 0")
+    return "\n".join(lines) + "\n"
+
+
 def prepare_script(workdir: str) -> str:
     """Make sure the directories exist and rsync is installed before the first push."""
     return f"""mkdir -p {q(workdir)} {q(JOBS_DIR)}

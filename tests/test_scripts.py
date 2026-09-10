@@ -92,6 +92,16 @@ def test_all_host_scripts_are_valid_sh() -> None:
     sh_ok(scripts.kill_script("j", 2.5))
     sh_ok(scripts.remove_script("j"))
     sh_ok(scripts.prepare_script("runs/x y"))
+    sh_ok(scripts.delete_script("runs/x y", files=["a b.py", "-rf"], dirs=["d/e", "d"]))
+
+
+def test_delete_script_quotes_and_only_removes_empty_directories() -> None:
+    script = scripts.delete_script("w", files=["it's.py", "-rf"], dirs=["pkg/sub", "pkg"])
+    lines = script.splitlines()
+    assert lines[0] == "cd w || exit 1"
+    assert lines[1] == "rm -f -- 'it'\"'\"'s.py' -rf"
+    assert lines[2] == "rmdir -- pkg/sub pkg 2>/dev/null"
+    assert lines[-1] == "exit 0"
 
 
 def test_start_script_refuses_heredoc_collision() -> None:

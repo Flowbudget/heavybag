@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
 import time
 from pathlib import Path
 
@@ -62,6 +64,63 @@ def test_run_uses_gitignore(env: Env) -> None:
     assert env.remote(".gitignore").exists()
     assert not env.remote("data").exists()
     assert not env.remote("debug.log").exists()
+
+
+def test_gitignore_of_an_enclosing_repository(env: Env) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=env.project.parent, check=True)
+    write(env.project.parent / ".gitignore", "data/\n")
+    write(env.project / "data" / "big.bin", "x" * 10)
+    write(env.project / "keep.py", "print(1)")
+    r = env.run("push", *base(env))
+    assert r.code == 0, r.err
+    assert env.remote("keep.py").exists()
+    assert not env.remote("data").exists()
+
+
+def test_project_ignored_by_an_enclosing_repository_is_pushed(env: Env) -> None:
+    # A dotfiles repository in the home directory that ignores everything else.
+    subprocess.run(["git", "init", "-q"], cwd=env.project.parent, check=True)
+    write(env.project.parent / ".gitignore", "*\n!.bashrc\n")
+    write(env.project / "keep.py", "print(1)")
+    r = env.run("push", *base(env))
+    assert r.code == 0, r.err
+    assert env.remote("keep.py").exists()
+
+
+def test_push_keeps_what_a_job_wrote_on_the_host(env: Env) -> None:
+    # Results must survive the next run whether they were pulled or not,
+    # and deleting a pulled copy locally must not delete it on the host.
+    write(env.project / "train.sh", 'mkdir -p outputs; echo precious > "outputs/$1.txt"\n')
+    r = env.run("run", *base(env), "--no-pull", "--", "sh", "train.sh", "a")
+    assert r.code == 0, r.err
+    r = env.run("run", *base(env), "--", "sh", "train.sh", "b")
+    assert r.code == 0, r.err
+    assert (env.project / "outputs" / "a.txt").read_text() == "precious\n"
+    shutil.rmtree(env.project / "outputs")
+    r = env.run("push", *base(env))
+    assert r.code == 0, r.err
+    assert "deleted" not in r.err
+    assert env.remote("outputs", "a.txt").read_text() == "precious\n"
+    assert env.remote("outputs", "b.txt").read_text() == "precious\n"
+
+
+def test_push_deletes_on_the_host_what_was_deleted_locally(env: Env) -> None:
+    for name in ("keep.py", "old.py", "pkg/mod.py", "lib/x.py", "lib/sub/y.py"):
+        write(env.project / name, "")
+    r = env.run("push", *base(env))
+    assert r.code == 0, r.err
+    write(env.remote("pkg", "out.txt"), "from a job")
+    (env.project / "old.py").unlink()
+    (env.project / "pkg" / "mod.py").unlink()
+    shutil.rmtree(env.project / "lib")
+    r = env.run("push", *base(env))
+    assert r.code == 0, r.err
+    assert "4 deleted" in r.err
+    assert env.remote("keep.py").exists()
+    assert not env.remote("old.py").exists()
+    assert not env.remote("pkg", "mod.py").exists()
+    assert not env.remote("lib").exists()
+    assert env.remote("pkg", "out.txt").read_text() == "from a job"
 
 
 def test_exit_code_is_passed_through(env: Env) -> None:

@@ -9,11 +9,15 @@ import tempfile
 import time
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from . import scripts, state
 from .config import Settings
 from .ssh import Ssh
+
+# Bytes of paths per ssh call when deleting on the host. Linux caps a single
+# argument, and with it the whole remote command, at 128 KiB; base64 adds a third.
+DELETE_BATCH_BYTES = 60_000
 
 
 class ConnectionLost(Exception):
@@ -82,31 +86,73 @@ def _parse_status(line: str) -> JobInfo:
     return JobInfo(job_id, status, code, started, kind or "direct", workdir, command.strip())
 
 
-def _rsync_stats(output: str) -> SyncStats:
-    stats = SyncStats()
+def _transferred(output: str) -> list[str]:
+    """Paths of the regular files that rsync -i reports as transferred.
+
+    GNU rsync writes an 11-character code, openrsync a 9-character one; both
+    are followed by one space and the path.
+    """
+    paths: list[str] = []
     for line in output.splitlines():
-        if line.startswith("*deleting"):
-            stats.deleted += 1
-        elif len(line) > 2 and line[0] in "<>" and line[1] == "f":
-            stats.files += 1
-    return stats
+        code, _, path = line.partition(" ")
+        if len(code) > 2 and code[0] in "<>" and code[1] == "f" and path:
+            paths.append(path)
+    return paths
 
 
-def gitignored_paths(project_dir: Path) -> list[str]:
-    """Paths git ignores in this project, as anchored rsync exclude patterns."""
-    if not (project_dir / ".git").exists():
-        return []
+def _rsync_stats(output: str) -> SyncStats:
+    return SyncStats(files=len(_transferred(output)))
+
+
+def _inside(path: str) -> bool:
+    """A relative path that stays inside the project directory."""
+    parts = PurePosixPath(path).parts
+    return bool(parts) and not path.startswith("/") and ".." not in parts
+
+
+def _chunks(items: Sequence[str], limit: int = DELETE_BATCH_BYTES) -> Iterator[list[str]]:
+    chunk: list[str] = []
+    size = 0
+    for item in items:
+        length = len(item.encode()) + 3  # quotes and a space
+        if chunk and size + length > limit:
+            yield chunk
+            chunk, size = [], 0
+        chunk.append(item)
+        size += length
+    if chunk:
+        yield chunk
+
+
+def _git(project_dir: Path, *args: str) -> subprocess.CompletedProcess | None:
     try:
-        result = subprocess.run(
-            ["git", "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"],
+        return subprocess.run(
+            ["git", *args],
             cwd=project_dir,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             check=False,
         )
     except OSError:
-        return []
-    if result.returncode != 0:
+        return None
+
+
+def gitignored_paths(project_dir: Path) -> list[str]:
+    """Paths git ignores in this project, as anchored rsync exclude patterns.
+
+    The project may be a subdirectory of a larger repository; git then reports
+    the paths relative to the project. A project that the enclosing repository
+    ignores as a whole, such as one below a dotfiles repository in the home
+    directory with `*` in its .gitignore, is not part of that repository, so
+    its rules do not apply.
+    """
+    ignored = _git(project_dir, "check-ignore", "-q", ".")
+    if ignored is None or ignored.returncode != 1:
+        return []  # 0: the whole project is ignored, 128: not inside a repository
+    result = _git(
+        project_dir, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"
+    )
+    if result is None or result.returncode != 0:
         return []
     out: list[str] = []
     for raw in result.stdout.split(b"\0"):
@@ -139,10 +185,18 @@ class Heavybag:
             raise RemoteError(f"could not prepare {self.ssh.host} (ssh exit {result.returncode})")
 
     def push(self) -> SyncStats:
-        """rsync the project directory to the host, deleting what vanished locally."""
+        """rsync the project directory to the host.
+
+        Deletes on the host only files that an earlier push put there and that
+        are gone locally. Whatever a job wrote on the host stays, pulled or not.
+        """
         self.prepare()
         local = self.settings.project_dir
-        args = ["-az", "--delete", "-i"]
+        key = (self.ssh.host, self.remote_dir, str(local.resolve()))
+        pushed = {p for p in state.pushed_files(*key) if _inside(p)}
+        gone = sorted(p for p in pushed if not os.path.lexists(local / p))
+        self._delete(gone)
+        args = ["-az", "-i"]
         for pattern in self.settings.all_excludes:
             args.append(f"--exclude={pattern}")
         ignored = gitignored_paths(local) if self.settings.use_gitignore else []
@@ -160,7 +214,30 @@ class Heavybag:
                 os.unlink(exclude_path)
         if result.returncode != 0:
             raise SyncError(f"rsync to {self.ssh.host} failed (exit {result.returncode})")
-        return _rsync_stats(result.stdout)
+        sent = _transferred(result.stdout)
+        state.save_pushed_files(*key, (pushed - set(gone)) | {p for p in sent if _inside(p)})
+        return SyncStats(files=len(sent), deleted=len(gone))
+
+    def _delete(self, paths: Sequence[str]) -> None:
+        """Remove files from the project directory on the host, then directories left empty."""
+        if not paths:
+            return
+        local = self.settings.project_dir
+        parents = {str(parent) for p in paths for parent in PurePosixPath(p).parents}
+        parents.discard(".")
+        dirs = sorted(
+            (d for d in parents if not (local / d).is_dir()),
+            key=lambda d: d.count("/"),
+            reverse=True,  # children before their parents
+        )
+        work = [scripts.delete_script(self.remote_dir, files=c) for c in _chunks(paths)]
+        work += [scripts.delete_script(self.remote_dir, dirs=c) for c in _chunks(dirs)]
+        for script in work:
+            result = self.ssh.run_script(script)
+            if result.returncode != 0:
+                raise RemoteError(
+                    f"could not delete files on {self.ssh.host} (exit {result.returncode})"
+                )
 
     def pull(self, paths: Sequence[str] | None = None) -> SyncStats:
         """Bring results back. Never deletes anything locally.
